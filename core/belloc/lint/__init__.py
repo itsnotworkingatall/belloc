@@ -11,6 +11,8 @@
   ushort    — кандыдаты на памылкі у/ў на стыку слоў
   ortho     — немагчымыя ў беларускім правапісе спалучэнні (ті, ді, рі,
               жі, ші, чі, де, те, ре…, й пасля зычнай, 3+ «о»)
+  dash      — звычайны прабел перад працяжнікам «—» (мусіць быць неразрыўны,
+              па STYLE.md)
   latin     — лацінскія словы ў перакладзе
 
 Білінгвальныя праверкі (патрабуюць пары арыгінал → пераклад):
@@ -75,6 +77,11 @@ from ..ortho import word_problems
 CYR_VOWELS = "аеёіоуыэюя"
 CYR_VOWELS_ALL = CYR_VOWELS + CYR_VOWELS.upper()
 TAG_RE = re.compile(r"<[^<>]+>")
+# унутрырадковыя тэгі: стаяць **унутры** слова або фразы, мяжой слова не з'яўляюцца
+INLINE_RE = re.compile(r"<\s*/?\s*(?:shy|i|b|em|strong)\s*>", re.I)
+# мяккі перанос: яго расстаноўка залежыць ад мовы (у беларускай словы іншай
+# даўжыні), таму ў параўнанні тэгаў ён не ўдзельнічае — гэта фарматаванне
+SHY_RE = re.compile(r"<\s*/?\s*shy\s*>", re.I)
 PLACEHOLDER_RE = re.compile(r"\{[^{}]*\}|%[sdif]")
 CYR_WORD_RE = re.compile(r"[А-Яа-яЁёІіЎў][А-Яа-яЁёІіЎў'’-]*")
 # лацінскае слова разам з дыякрытыкай: без яе «Dâr» распадалася б
@@ -84,7 +91,7 @@ RU_LETTERS_RE = re.compile(r"[иИщЩъЪ]")
 RU_SUFFIX_RE = re.compile(r"[А-Яа-яЁёІіЎў]+(?:ть|тся|ться)\b")
 
 MONO_CHECKS = ["spell", "names", "ruwords", "ruletters", "rusuffix", "ushort",
-               "ortho", "latin"]
+               "ortho", "latin", "dash"]
 BI_CHECKS = ["tags", "placeholders", "ws", "endpunct", "lenratio", "dupes",
              "untranslated", "glossary", "prefix"]
 ALL_CHECKS = MONO_CHECKS + BI_CHECKS
@@ -179,7 +186,19 @@ class Finding:
 
 
 def clean_markup(text: str) -> str:
-    return PLACEHOLDER_RE.sub(" ", TAG_RE.sub(" ", text))
+    # Унутрырадковыя тэгі (<shy>, <i>, <b>) выдаляем цалкам, а не прабелам:
+    # «Утрымлі<shy>вайце» і «<i>пера</i>прызначыць» — адно слова, і калі паставіць
+    # прабел, арфаграфія бачыць два невядомыя «словы» («вайце», «пера»).
+    # Блочныя тэгі (<br>, <sprite …>) прабелам замяняем — яны раздзяляюць.
+    cleaned = PLACEHOLDER_RE.sub(" ", TAG_RE.sub(" ", INLINE_RE.sub("", text)))
+    # Камбайнавыя дыякрытыкі (глітч-тэкст: сапсаваны друк, эфекты) — не літары:
+    # для слоўных праверак і падліку даўжыні іх трэба зняць, інакш тэкст
+    # разрываецца на кавалкі. Спачатку NFC — каб «й»/«ё», запісаныя асобнымі
+    # знакамі, зноў сталі літарамі. Націск (U+0301) пакідаем: гэта нашая
+    # свядомая паметка ў тэксце.
+    cleaned = unicodedata.normalize("NFC", cleaned)
+    return "".join(ch for ch in cleaned
+                   if unicodedata.category(ch) != "Mn" or ch == "\u0301")
 
 
 def excerpt(s: str, limit: int = 70) -> str:
@@ -449,8 +468,9 @@ def check_latin(segs, allow):
 # ---------------------------------------------------------------- білінгвальныя праверкі
 
 def check_tags(seg):
-    src_tags = Counter(TAG_RE.findall(seg.src))
-    dst_tags = Counter(TAG_RE.findall(seg.dst))
+    # <shy> — мяккі перанос: яго месцы залежаць ад мовы, таму не параўноўваем
+    src_tags = Counter(t for t in TAG_RE.findall(seg.src) if not SHY_RE.fullmatch(t))
+    dst_tags = Counter(t for t in TAG_RE.findall(seg.dst) if not SHY_RE.fullmatch(t))
     if src_tags != dst_tags:
         missing = list((src_tags - dst_tags).elements())
         extra = list((dst_tags - src_tags).elements())
@@ -460,6 +480,22 @@ def check_tags(seg):
         if extra:
             parts.append("лішнія: " + " ".join(extra[:5]))
         yield "; ".join(parts)
+
+
+# працяжнік у сказе пішам з неразрыўным прабелам перад ім (STYLE.md). Звычайны
+# прабел з'яўляецца, калі «-» памянялі на «—» ўжо пасля набору, калі радок
+# уставілі з іншай крыніцы або калі прабел не з той раскладкі. Нябачны, таму
+# лінтэр — адзінае месца, дзе гэта ловіцца. Праверка дзейнічае ўнутры радка:
+# працяжнік на пачатку радка (рэпліка дыялогу) не правяраецца — перад ім няма
+# тэксту, і неразрыўны прабел там не патрэбны.
+DASH_SPACE_RE = re.compile(r"[ \t]\u2014")
+
+
+def check_dash(seg):
+    n = len(DASH_SPACE_RE.findall(seg.dst))
+    if n:
+        yield (f"{n}× звычайны прабел перад «—» "
+               f"(трэба неразрыўны) — {excerpt(seg.dst)}")
 
 
 # Unity {ManualInput:ClimbUp/Display:Up}: подпіс пасля Display: бачыць гулец,
@@ -674,6 +710,10 @@ def check_glossary(seg, compiled):
     for en, bel, en_re, stems in compiled:
         if en_re.search(seg.src_body) and stems and \
                 not any(st in dst_low for st in stems):
+            # назва, якую перакладчык свядома пакінуў лацінкай (ESCHATON, Quisach),
+            # — гэта рашэнне, а не разыходжанне з гласарыем
+            if fold(en).lower() in dst_low:
+                continue
             yield f"«{en}» → чакаецца «{bel}» — {excerpt(seg.dst)}"
 
 
@@ -804,7 +844,8 @@ def main():
     per_seg_mono = {"ruletters": check_ruletters,
                     "rusuffix": lambda s: check_rusuffix(s, allow),
                     "ushort": check_ushort,
-                    "ortho": lambda s: check_ortho(s, allow)}
+                    "ortho": lambda s: check_ortho(s, allow),
+                    "dash": check_dash}
     per_seg_bi = {"tags": check_tags, "placeholders": check_placeholders,
                   "ws": check_ws, "endpunct": check_endpunct,
                   "lenratio": check_lenratio, "untranslated": check_untranslated,
