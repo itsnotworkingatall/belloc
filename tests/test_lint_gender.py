@@ -23,8 +23,13 @@ dst_src = "Have you ever noticed that?"
 
 
 class GenderTest(unittest.TestCase):
+    def setUp(self):
+        # лінтэр будуе гэты слоўнік з корпуса; у тэсце дастаткова пары «-ў/-ла»
+        lint.DST_WORDS.update({"заўважала"})
+
     def tearDown(self):
         lint.HINT.clear()
+        lint.DST_WORDS.clear()
 
     def test_hint_feminine_dst_masculine(self):
         self.assertEqual(len(msgs("Замечала ли ты, что так бывает?", "Ты заўважаў, што так бывае?")), 1)

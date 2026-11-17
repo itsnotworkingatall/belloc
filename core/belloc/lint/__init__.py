@@ -505,6 +505,8 @@ def check_dash(seg):
 # ні glossary. Аракул — радок-падказка (звычайна руская): там род заўсёды
 # пазначаны. Праверка ўключаецца толькі калі ёсць --hint.
 HINT: dict[str, str] = {}
+# усе словы перакладу: па іх пазнаём дзеяслоў па пары «-ў» / «-ла»
+DST_WORDS: set[str] = set()
 TY_RE = re.compile(r"(?<![\w-])[Тт]ы(?![\w-])")
 HINT_FEM_RE = re.compile(r"(?<![\w-])([А-Яа-яЁё]{3,}(?:ла|лась))(?![\w-])")
 HINT_MASC_RE = re.compile(r"(?<![\w-])([А-Яа-яЁё]{3,}л)(?![\w-])")
@@ -516,6 +518,22 @@ def _near_ty(text: str, pos: int, span: int = 90) -> bool:
     return bool(TY_RE.search(text[max(0, pos - span):pos + span]))
 
 
+def _is_past_verb(word: str) -> bool:
+    """Дзеяслоў прошлага часу пазнаём па пары «-ў» / «-ла» у тэксце перакладу.
+
+    Так адсяваюцца назоўнікі («доказаў», «перагаворшчыкаў»), прыслоўі («зноў»)
+    і загадны лад («пастаў»): для іх пары з «-ла» у корпусе няма.
+    """
+    w = word.lower()
+    if w.endswith("ўся"):
+        base = w[:-3]
+        return (base + "лася") in DST_WORDS
+    if w.endswith("ў"):
+        base = w[:-1]
+        return (base + "ла") in DST_WORDS or (base + "лася") in DST_WORDS
+    return False
+
+
 def check_gender(seg):
     """Кандыдат на памылку роду: у падказцы «ты …-ла», у нас «ты …-ў»."""
     hint = HINT.get(seg.src or "")
@@ -525,7 +543,8 @@ def check_gender(seg):
     hint_masc = [m.group(1) for m in HINT_MASC_RE.finditer(hint) if _near_ty(hint, m.start())]
     if not hint_fem or hint_masc:
         return
-    dst_masc = [m.group(1) for m in DST_MASC_RE.finditer(seg.dst) if _near_ty(seg.dst, m.start())]
+    dst_masc = [m.group(1) for m in DST_MASC_RE.finditer(seg.dst)
+                if _near_ty(seg.dst, m.start()) and _is_past_verb(m.group(1))]
     if not dst_masc:
         return
     dst_fem = [m.group(1) for m in DST_FEM_RE.finditer(seg.dst) if _near_ty(seg.dst, m.start())]
@@ -881,6 +900,11 @@ def main():
     findings: list[Finding] = []
 
     wordlist = load_wordlist(args.wordlist) if args.wordlist else set()
+
+    if "gender" in enabled:
+        # слоўнік усіх формаў перакладу — каб адрозніць дзеяслоў ад назоўніка
+        for seg in segs:
+            DST_WORDS.update(w.lower() for w in CYR_WORD_RE.findall(clean_markup(seg.dst)))
 
     if enabled & {"spell", "names", "ruwords"}:
         findings += check_spell_and_ruwords(
