@@ -84,7 +84,7 @@ RU_SUFFIX_RE = re.compile(r"[А-Яа-яЁёІіЎў]+(?:ть|тся|ться)\b"
 MONO_CHECKS = ["spell", "names", "ruwords", "ruletters", "rusuffix", "ushort", "latin",
                "dash"]
 BI_CHECKS = ["tags", "placeholders", "ws", "endpunct", "lenratio", "dupes",
-             "untranslated", "glossary", "prefix"]
+             "untranslated", "glossary", "prefix", "gender"]
 ALL_CHECKS = MONO_CHECKS + BI_CHECKS
 
 
@@ -460,6 +460,43 @@ def check_dash(seg):
                f"(трэба неразрыўны) — {excerpt(seg.dst)}")
 
 
+# ---------------------------------------------------------------- род (2-я асоба)
+# У беларускай, як і ў рускай, прошлы час дзеяслова не мае асобы, толькі род:
+# «ты сказаў» (м) / «ты сказала» (ж). Калі галоўная гераіня — жанчына, а ў
+# перакладзе стаіць мужчынская форма, гэта памылка, якую не бачыць ні spell,
+# ні glossary. Аракул — радок-падказка (звычайна руская): там род заўсёды
+# пазначаны. Праверка ўключаецца толькі калі ёсць --hint.
+HINT: dict[str, str] = {}
+TY_RE = re.compile(r"(?<![\w-])[Тт]ы(?![\w-])")
+HINT_FEM_RE = re.compile(r"(?<![\w-])([А-Яа-яЁё]{3,}(?:ла|лась))(?![\w-])")
+HINT_MASC_RE = re.compile(r"(?<![\w-])([А-Яа-яЁё]{3,}л)(?![\w-])")
+DST_MASC_RE = re.compile(r"(?<![\w-])([А-Яа-яЁёіў]{3,}(?:ў|ўся))(?![\w-])")
+DST_FEM_RE = re.compile(r"(?<![\w-])([А-Яа-яЁёіў]{3,}(?:ла|лася))(?![\w-])")
+
+
+def _near_ty(text: str, pos: int, span: int = 90) -> bool:
+    return bool(TY_RE.search(text[max(0, pos - span):pos + span]))
+
+
+def check_gender(seg):
+    """Кандыдат на памылку роду: у падказцы «ты …-ла», у нас «ты …-ў»."""
+    hint = HINT.get(seg.src or "")
+    if not hint:
+        return
+    hint_fem = [m.group(1) for m in HINT_FEM_RE.finditer(hint) if _near_ty(hint, m.start())]
+    hint_masc = [m.group(1) for m in HINT_MASC_RE.finditer(hint) if _near_ty(hint, m.start())]
+    if not hint_fem or hint_masc:
+        return
+    dst_masc = [m.group(1) for m in DST_MASC_RE.finditer(seg.dst) if _near_ty(seg.dst, m.start())]
+    if not dst_masc:
+        return
+    dst_fem = [m.group(1) for m in DST_FEM_RE.finditer(seg.dst) if _near_ty(seg.dst, m.start())]
+    if dst_fem:
+        return
+    yield (f"род: у падказцы «{hint_fem[0]}» (ж), у нас «{dst_masc[0]}» (м) — "
+           f"{excerpt(seg.dst)}")
+
+
 # Unity {ManualInput:ClimbUp/Display:Up}: подпіс пасля Display: бачыць гулец,
 # яго перакладаюць (так зроблена і ў афіцыйным RU) — параўноўваем без яго
 DISPLAY_RE = re.compile(r"/Display:[^{}]*(?=\})")
@@ -716,6 +753,9 @@ def main():
     ap.add_argument("--marks", default="", metavar="CHARS",
                     help="знакі, колькасць якіх мусіць супадаць з арыгіналам "
                          "(праверка placeholders; Dispatch: «|^»)")
+    ap.add_argument("--hint", metavar="FILE",
+                    help="JSON {\"strings\": {арыгінал: падказка}} — радкі іншай "
+                         "мовы (звычайна рускай) для праверкі gender")
     ap.add_argument("--checks", metavar="LIST",
                     help="запусціць толькі гэтыя праверкі (праз коску)")
     ap.add_argument("--skip", metavar="LIST", default="",
@@ -744,6 +784,15 @@ def main():
         enabled -= {"glossary"}
     if not args.ink_prefix:
         enabled -= {"prefix"}
+    if args.hint:
+        try:
+            data = json.load(open(args.hint, encoding="utf-8"))
+        except (OSError, ValueError) as e:
+            sys.exit(f"{args.hint}: не чытаецца JSON ({e})")
+        strings = data.get("strings", data) if isinstance(data, dict) else {}
+        HINT.update({k: v for k, v in strings.items() if isinstance(v, str) and v.strip()})
+    if not HINT:
+        enabled -= {"gender"}
 
     segs: list[Segment] = []
     for p in args.pairs:
@@ -804,7 +853,7 @@ def main():
                   "ws": check_ws, "endpunct": check_endpunct,
                   "lenratio": check_lenratio, "untranslated": check_untranslated,
                   "glossary": lambda s: check_glossary(s, glossary),
-                  "prefix": check_prefix}
+                  "prefix": check_prefix, "gender": check_gender}
 
     for seg in segs:
         for name, fn in per_seg_mono.items():
