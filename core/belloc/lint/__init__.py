@@ -470,14 +470,32 @@ HINT: dict[str, str] = {}
 # усе словы перакладу: па іх пазнаём дзеяслоў па пары «-ў» / «-ла»
 DST_WORDS: set[str] = set()
 TY_RE = re.compile(r"(?<![\w-])[Тт]ы(?![\w-])")
+# іншыя дзейнікі: калі пасля «ты» бліжэй стаіць «ён», «яна», «я» — гэта не 2-я асоба
+OTHER_SUBJ_RE = re.compile(r"(?<![\w-])(ён|яна|я|яны|яго|ёй|іх)(?![\w-])", re.I)
 HINT_FEM_RE = re.compile(r"(?<![\w-])([А-Яа-яЁё]{3,}(?:ла|лась))(?![\w-])")
 HINT_MASC_RE = re.compile(r"(?<![\w-])([А-Яа-яЁё]{3,}л)(?![\w-])")
 DST_MASC_RE = re.compile(r"(?<![\w-])([А-Яа-яЁёіў]{3,}(?:ў|ўся))(?![\w-])")
 DST_FEM_RE = re.compile(r"(?<![\w-])([А-Яа-яЁёіў]{3,}(?:ла|лася))(?![\w-])")
 
 
-def _near_ty(text: str, pos: int, span: int = 90) -> bool:
-    return bool(TY_RE.search(text[max(0, pos - span):pos + span]))
+def _near_ty(text: str, pos: int, span: int = 70) -> bool:
+    """Ці стаіць «ты» побач і ці застаецца яно дзейнікам гэтага дзеяслова.
+
+    Дзеяслоў можа стаяць і да «ты» («Замечала ли ты…»), таму глядзім абодва бакі;
+    калі ж «ты» стаіць раней, паміж ім і дзеясловам не павінна быць іншага
+    дзейніка («ён», «яна», «я»…).
+    """
+    lo = max(0, pos - span)
+    win = text[lo:pos + span]
+    tys = list(TY_RE.finditer(win))
+    if not tys:
+        return False
+    nearest = min(tys, key=lambda m: min(abs(lo + m.start() - pos), abs(lo + m.end() - pos)))
+    if lo + nearest.end() <= pos:
+        tail = text[lo + nearest.end():pos]
+        if OTHER_SUBJ_RE.search(tail):
+            return False
+    return True
 
 
 def _is_past_verb(word: str) -> bool:
