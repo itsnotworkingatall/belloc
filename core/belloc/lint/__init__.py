@@ -507,13 +507,21 @@ def check_dash(seg):
 HINT: dict[str, str] = {}
 # усе словы перакладу: па іх пазнаём дзеяслоў па пары «-ў» / «-ла»
 DST_WORDS: set[str] = set()
+# усе словы падказак (ё → е): тое ж для рускага боку, па пары «-л» / «-ла»
+HINT_WORDS: set[str] = set()
 TY_RE = re.compile(r"(?<![\w-])[Тт]ы(?![\w-])")
-# іншыя дзейнікі: калі пасля «ты» бліжэй стаіць «ён», «яна», «я» — гэта не 2-я асоба
-OTHER_SUBJ_RE = re.compile(r"(?<![\w-])(ён|яна|я|яны|яго|ёй|іх)(?![\w-])", re.I)
-HINT_FEM_RE = re.compile(r"(?<![\w-])([А-Яа-яЁё]{3,}(?:ла|лась))(?![\w-])")
-HINT_MASC_RE = re.compile(r"(?<![\w-])([А-Яа-яЁё]{3,}л)(?![\w-])")
-DST_MASC_RE = re.compile(r"(?<![\w-])([А-Яа-яЁёіў]{3,}(?:ў|ўся))(?![\w-])")
-DST_FEM_RE = re.compile(r"(?<![\w-])([А-Яа-яЁёіў]{3,}(?:ла|лася))(?![\w-])")
+# іншыя дзейнікі: калі пасля «ты» бліжэй стаіць «ён», «яна», «я» — гэта не 2-я асоба.
+# Рускія формы — для радка-падказкі: без іх «Ты знаешь, она ушла» лічылася б за «ты ушла».
+OTHER_SUBJ_RE = re.compile(r"(?<![\w-])(ён|яна|я|яны|яго|ёй|іх|он|она|они|его|ей|их)(?![\w-])",
+                           re.I)
+# аснова ад дзвюх літар: «была» / «быў», «дала» / «даў» — самыя частыя формы;
+# шум (назоўнікі, прыслоўі) адсяваюць _is_past_verb і _hint_verb
+HINT_FEM_RE = re.compile(r"(?<![\w-])([А-Яа-яЁё]{2,}(?:ла|лась))(?![\w-])")
+HINT_WORD_RE = re.compile(r"(?<![\w-])([А-Яа-яЁё]{3,})(?![\w-])")
+DST_MASC_RE = re.compile(r"(?<![\w-])([А-Яа-яЁёіў]{2,}(?:ў|ўся))(?![\w-])")
+DST_FEM_RE = re.compile(r"(?<![\w-])([А-Яа-яЁёіў]{2,}(?:ла|лася))(?![\w-])")
+# склонавыя канчаткі назоўніка на «-л» / «-ла» (стол, школа): у дзеяслова іх няма
+_RU_NOUN_ENDS = ("лу", "лом", "лы", "лой", "лам", "лах", "лами")
 
 
 def _near_ty(text: str, pos: int, span: int = 70) -> bool:
@@ -552,13 +560,49 @@ def _is_past_verb(word: str) -> bool:
     return False
 
 
+def _ru(word: str) -> str:
+    return word.lower().replace("ё", "е")
+
+
+def _hint_verb(word: str) -> str:
+    """Род рускага дзеяслова прошлага часу ў падказцы: «ж», «м» або «» (не дзеяслоў).
+
+    Як і ў _is_past_verb, дзеяслоў пазнаём па пары ў корпусе падказак: «сказала» —
+    калі ёсць «сказал», «смогла» — калі ёсць «смог», «пришла» — калі ёсць «пришел».
+    Так адсяваюцца прыслоўі («сначала») і назоўнікі без пары; назоўнік з парай
+    («стол» / «стола», «школ» / «школа») выдаюць склонавыя формы («столу», «школы»).
+    """
+    w = _ru(word)
+    if w.endswith("лась"):
+        return "ж" if w[:-4] + "лся" in HINT_WORDS else ""
+    if w.endswith("лся"):
+        return "м" if w[:-3] + "лась" in HINT_WORDS else ""
+    if w.endswith("ла"):
+        base = w[:-2]
+        pair = (base + "л", base, base + "ел")            # сказал, смог, пришел
+        sex = "ж"
+    elif w.endswith("ел") and w[:-2] + "ла" in HINT_WORDS:  # пришел — пришла
+        base, pair, sex = w[:-2], (w[:-2] + "ла",), "м"
+    elif w.endswith("л"):
+        base, pair, sex = w[:-1], (w + "а",), "м"
+    else:                                                 # смог — смогла, умер — умерла
+        base, pair, sex = w, (w + "ла",), "м"
+    if not any(p in HINT_WORDS for p in pair):
+        return ""
+    if any(base + end in HINT_WORDS for end in _RU_NOUN_ENDS):
+        return ""
+    return sex
+
+
 def check_gender(seg):
     """Кандыдат на памылку роду: у падказцы «ты …-ла», у нас «ты …-ў»."""
     hint = HINT.get(seg.src or "")
     if not hint:
         return
-    hint_fem = [m.group(1) for m in HINT_FEM_RE.finditer(hint) if _near_ty(hint, m.start())]
-    hint_masc = [m.group(1) for m in HINT_MASC_RE.finditer(hint) if _near_ty(hint, m.start())]
+    hint_fem = [m.group(1) for m in HINT_FEM_RE.finditer(hint)
+                if _hint_verb(m.group(1)) == "ж" and _near_ty(hint, m.start())]
+    hint_masc = [m.group(1) for m in HINT_WORD_RE.finditer(hint)
+                 if _hint_verb(m.group(1)) == "м" and _near_ty(hint, m.start())]
     if not hint_fem or hint_masc:
         return
     dst_masc = [m.group(1) for m in DST_MASC_RE.finditer(seg.dst)
@@ -781,12 +825,16 @@ def check_glossary(seg, compiled):
     # службовыя ink-умовы (.Snell==0-) змяшчаюць уласныя назвы, якія
     # наўмысна НЕ перакладаюцца — правяраем толькі цела радка
     dst_low = fold(seg.dst_body).lower()
+    dst_text = None
     for en, bel, en_re, stems in compiled:
         if en_re.search(seg.src_body) and stems and \
                 not any(st in dst_low for st in stems):
             # назва, якую перакладчык свядома пакінуў лацінкай (ESCHATON, Quisach),
-            # — гэта рашэнне, а не разыходжанне з гласарыем
-            if fold(en).lower() in dst_low:
+            # — гэта рашэнне, а не разыходжанне з гласарыем. Шукаем яе цэлым словам
+            # і па-за разметкай: «Ash» у «Flash» ці «player» у {player} — не назва.
+            if dst_text is None:
+                dst_text = clean_markup(seg.dst_body)
+            if en_re.search(dst_text):
                 continue
             yield f"«{en}» → чакаецца «{bel}» — {excerpt(seg.dst)}"
 
@@ -866,7 +914,8 @@ def main():
         enabled -= {"prefix"}
     if args.hint:
         try:
-            data = json.load(open(args.hint, encoding="utf-8"))
+            with open(args.hint, encoding="utf-8") as f:
+                data = json.load(f)
         except (OSError, ValueError) as e:
             sys.exit(f"{args.hint}: не чытаецца JSON ({e})")
         strings = data.get("strings", data) if isinstance(data, dict) else {}
@@ -923,6 +972,9 @@ def main():
         # слоўнік усіх формаў перакладу — каб адрозніць дзеяслоў ад назоўніка
         for seg in segs:
             DST_WORDS.update(w.lower() for w in CYR_WORD_RE.findall(clean_markup(seg.dst)))
+        # і слоўнік формаў падказак — тое ж для рускага боку
+        for text in HINT.values():
+            HINT_WORDS.update(_ru(w) for w in CYR_WORD_RE.findall(clean_markup(text)))
 
     if enabled & {"spell", "names", "ruwords"}:
         findings += check_spell_and_ruwords(
