@@ -22,5 +22,6 @@
       "ru"
     ],
     "preview_locale": "ru"
-  }
+  },
+  "from_original": "(?s)\\[[^]]*\\]|.+"
 }
